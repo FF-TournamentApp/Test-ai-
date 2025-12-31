@@ -1,0 +1,476 @@
+<meta name='viewport' content='width=device-width, initial-scale=1'/><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LK Fly Bird</title>
+
+<style>
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    user-select:none;
+}
+body{
+    background:#70c5ce;
+    overflow:hidden;
+}
+canvas{
+    display:block;
+}
+.score-display{
+    position:absolute;
+    top:20px;
+    width:100%;
+    text-align:center;
+    font-size:60px;
+    font-weight:bold;
+    color:#fff;
+    text-shadow:4px 4px 0 #000;
+}
+.game-title{
+    position:absolute;
+    top:10px;
+    width:100%;
+    text-align:center;
+    font-size:40px;
+    color:#fff;
+}
+/* Mic controls styling */
+.mic-controls{
+    position:absolute;
+    top:80px;
+    width:100%;
+    text-align:center;
+}
+.mic-btn{
+    background:#ff9900;
+    color:white;
+    border:none;
+    padding:10px 20px;
+    border-radius:20px;
+    font-size:16px;
+    cursor:pointer;
+    font-weight:bold;
+}
+.mic-status{
+    color:white;
+    margin-top:10px;
+    font-size:14px;
+}
+.mic-visualizer{
+    position:absolute;
+    bottom:50px;
+    width:200px;
+    height:20px;
+    left:50%;
+    transform:translateX(-50%);
+    background:rgba(0,0,0,0.3);
+    border-radius:10px;
+    overflow:hidden;
+}
+.mic-level{
+    height:100%;
+    background:#ff9900;
+    width:0%;
+    transition:width 0.1s;
+}
+</style>
+</head>
+
+<body>
+
+<canvas id="gameCanvas"></canvas>
+<div class="game-title">LK FLY BIRD</div>
+<div class="score-display">0</div>
+
+<!-- Mic Controls -->
+<div class="mic-controls">
+    <button id="micBtn" class="mic-btn">🎤 Start Mic Control</button>
+    <div id="micStatus" class="mic-status">Click to enable microphone</div>
+</div>
+
+<!-- Mic Visualizer -->
+<div class="mic-visualizer">
+    <div id="micLevel" class="mic-level"></div>
+</div>
+
+<img id="birdImage" src="https://iili.io/fXCiFcJ.md.png" hidden>
+<img id="pipeImage" src="https://iili.io/fXCQ3Fe.md.jpg" hidden>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const birdImg = document.getElementById("birdImage");
+const pipeImg = document.getElementById("pipeImage");
+
+// Mic elements
+const micBtn = document.getElementById("micBtn");
+const micStatus = document.getElementById("micStatus");
+const micLevel = document.getElementById("micLevel");
+
+let score = 0;
+let gameSpeed = 1;
+
+const bird = {
+    x: canvas.width * 0.2,
+    y: canvas.height / 2,
+    w: 50,
+    h: 50,
+    gravity: 0.05,
+    lift: -2.8,
+    velocity: 0
+};
+
+/* =========================
+   PIPE SETTINGS (ONLY CHANGE)
+   ========================= */
+let pipes = [];
+const pipeWidth = 80;
+const pipeGap = 200;        // BIG vertical gap
+const pipeFrequency = 220;  // BIG horizontal spacing
+let frame = 0;
+/* ========================= */
+
+// ====================
+// MICROPHONE CONTROL
+// ====================
+let audioContext;
+let microphone;
+let analyser;
+let micEnabled = false;
+let micDataArray;
+let micFlapThreshold = 40; // Volume threshold for flapping
+let lastFlapTime = 0;
+let flapCooldown = 200; // Milliseconds between flaps
+
+// Initialize microphone
+async function initMicrophone() {
+    try {
+        // Get user media (microphone)
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false
+            } 
+        });
+        
+        // Create audio context
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        microphone = audioContext.createMediaStreamSource(stream);
+        
+        // Create analyser to get volume data
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        microphone.connect(analyser);
+        
+        // Create data array for analyser
+        micDataArray = new Uint8Array(analyser.frequencyBinCount);
+        
+        micEnabled = true;
+        micBtn.textContent = "🎤 Mic: ON";
+        micBtn.style.background = "#00cc00";
+        micStatus.textContent = "Make noise or blow to flap!";
+        
+        // Start analyzing microphone input
+        analyzeMicrophone();
+        
+        return true;
+    } catch (error) {
+        console.error("Error accessing microphone:", error);
+        micStatus.textContent = "Mic access denied. Click or use SPACE key.";
+        return false;
+    }
+}
+
+// Analyze microphone input
+function analyzeMicrophone() {
+    if (!micEnabled || !analyser) return;
+    
+    // Get frequency data
+    analyser.getByteFrequencyData(micDataArray);
+    
+    // Calculate average volume
+    let sum = 0;
+    for (let i = 0; i < micDataArray.length; i++) {
+        sum += micDataArray[i];
+    }
+    let averageVolume = sum / micDataArray.length;
+    
+    // Update visualizer
+    let levelPercent = Math.min(100, (averageVolume / 128) * 100);
+    micLevel.style.width = levelPercent + "%";
+    
+    // Color changes based on volume
+    if (levelPercent > 70) {
+        micLevel.style.background = "#ff0000";
+    } else if (levelPercent > 40) {
+        micLevel.style.background = "#ff9900";
+    } else {
+        micLevel.style.background = "#00cc00";
+    }
+    
+    // Check if volume exceeds threshold for flap
+    const currentTime = Date.now();
+    if (averageVolume > micFlapThreshold && (currentTime - lastFlapTime) > flapCooldown) {
+        flap();
+        lastFlapTime = currentTime;
+    }
+    
+    // Continue analyzing
+    requestAnimationFrame(analyzeMicrophone);
+}
+
+// Toggle microphone
+micBtn.addEventListener("click", async function() {
+    if (micEnabled) {
+        // Turn off microphone
+        if (microphone) {
+            microphone.disconnect();
+        }
+        if (audioContext) {
+            audioContext.close();
+        }
+        micEnabled = false;
+        micBtn.textContent = "🎤 Start Mic Control";
+        micBtn.style.background = "#ff9900";
+        micStatus.textContent = "Mic OFF. Click to enable.";
+        micLevel.style.width = "0%";
+    } else {
+        // Turn on microphone
+        const success = await initMicrophone();
+        if (!success) {
+            micBtn.textContent = "🎤 Mic Error";
+            micBtn.style.background = "#cc0000";
+        }
+    }
+});
+
+// ====================
+// SOUND FUNCTIONS ONLY
+// ====================
+let soundEnabled = true;
+
+// Initialize sound effects audio context (separate from mic)
+let sfxAudioContext;
+
+function initSFXAudio() {
+    try {
+        sfxAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+    } catch(e) {
+        console.log("SFX Audio not supported");
+        soundEnabled = false;
+    }
+}
+
+// Play beep sound
+function playBeepSound(frequency, duration, volume = 0.1) {
+    if (!soundEnabled || !sfxAudioContext) return;
+    
+    try {
+        const oscillator = sfxAudioContext.createOscillator();
+        const gainNode = sfxAudioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(sfxAudioContext.destination);
+        
+        oscillator.frequency.value = frequency;
+        oscillator.type = 'sine';
+        
+        gainNode.gain.setValueAtTime(volume, sfxAudioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, sfxAudioContext.currentTime + duration);
+        
+        oscillator.start();
+        oscillator.stop(sfxAudioContext.currentTime + duration);
+    } catch(e) {
+        // Ignore audio errors
+    }
+}
+
+// Flap sound
+function playFlapSound() {
+    playBeepSound(600, 0.1, 0.08);
+}
+
+// Score sound
+function playScoreSound() {
+    playBeepSound(800, 0.15, 0.1);
+    setTimeout(() => playBeepSound(1000, 0.1, 0.08), 50);
+}
+
+// Collision sound ("Oh my god wow")
+function playCollisionSound() {
+    if (!soundEnabled || !sfxAudioContext) return;
+    
+    try {
+        const frequencies = [200, 150, 180];
+        const durations = [0.2, 0.3, 0.25];
+        
+        for (let i = 0; i < frequencies.length; i++) {
+            setTimeout(() => {
+                const oscillator = sfxAudioContext.createOscillator();
+                const gainNode = sfxAudioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(sfxAudioContext.destination);
+                
+                oscillator.frequency.value = frequencies[i];
+                oscillator.type = 'sawtooth';
+                
+                gainNode.gain.setValueAtTime(0.15, sfxAudioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, sfxAudioContext.currentTime + durations[i]);
+                
+                oscillator.start();
+                oscillator.stop(sfxAudioContext.currentTime + durations[i]);
+            }, i * 100);
+        }
+    } catch(e) {
+        // Ignore audio errors
+    }
+}
+// ====================
+
+function drawBird(){
+    ctx.drawImage(
+        birdImg,
+        bird.x - bird.w/2,
+        bird.y - bird.h/2,
+        bird.w,
+        bird.h
+    );
+}
+
+function drawPipes(){
+    pipes.forEach(p=>{
+        // Top pipe
+        ctx.save();
+        ctx.translate(p.x + pipeWidth/2, p.top/2);
+        ctx.scale(1,-1);
+        ctx.drawImage(pipeImg, -pipeWidth/2, -p.top/2, pipeWidth, p.top);
+        ctx.restore();
+
+        // Bottom pipe
+        ctx.drawImage(
+            pipeImg,
+            p.x,
+            p.bottom,
+            pipeWidth,
+            canvas.height - p.bottom
+        );
+    });
+}
+
+function updatePipes(){
+    if(frame % pipeFrequency === 0){
+
+        /* 🔽 PIPE HEIGHT REDUCED HERE 🔽 */
+        let minTop = 80;
+        let maxTop = canvas.height * 0.45; // shorter pipes
+        let top = Math.random() * (maxTop - minTop) + minTop;
+
+        pipes.push({
+            x: canvas.width,
+            top: top,
+            bottom: top + pipeGap,
+            passed:false
+        });
+    }
+
+    pipes.forEach(p=>{
+        p.x -= gameSpeed;
+
+        if(!p.passed && p.x + pipeWidth < bird.x){
+            p.passed = true;
+            score++;
+            document.querySelector(".score-display").innerText = score;
+            // Play score sound
+            playScoreSound();
+        }
+    });
+
+    pipes = pipes.filter(p => p.x > -pipeWidth);
+}
+
+function updateBird(){
+    bird.velocity += bird.gravity;
+    bird.y += bird.velocity;
+}
+
+function collision(){
+    if(bird.y + bird.h/2 > canvas.height || bird.y - bird.h/2 < 0){
+        playCollisionSound();
+        return true;
+    }
+
+    for(let p of pipes){
+        if(
+            bird.x + bird.w/2 > p.x &&
+            bird.x - bird.w/2 < p.x + pipeWidth
+        ){
+            if(
+                bird.y - bird.h/2 < p.top ||
+                bird.y + bird.h/2 > p.bottom
+            ){
+                playCollisionSound();
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+function flap(){
+    bird.velocity = bird.lift;
+    // Play flap sound
+    playFlapSound();
+}
+
+function loop(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    updatePipes();
+    updateBird();
+
+    drawPipes();
+    drawBird();
+
+    if(collision()){
+        // Small delay to hear collision sound before reloading
+        setTimeout(() => {
+            location.reload();
+        }, 500);
+        return;
+    }
+
+    frame++;
+    requestAnimationFrame(loop);
+}
+
+// Mouse and keyboard controls still work
+canvas.addEventListener("click", flap);
+document.addEventListener("keydown", e=>{
+    if(e.code==="Space" || e.code==="ArrowUp") flap();
+});
+
+// Initialize SFX audio after user interaction
+document.addEventListener('click', function initAudioOnClick() {
+    if (sfxAudioContext && sfxAudioContext.state === 'suspended') {
+        sfxAudioContext.resume();
+    }
+    // Initialize SFX audio
+    initSFXAudio();
+    document.removeEventListener('click', initAudioOnClick);
+});
+
+// Start the game
+loop();
+</script>
+
+</body>
+</html>
